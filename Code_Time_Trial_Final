@@ -1,0 +1,369 @@
+#EEC 195A/B Line-Tracking Vehicle Program By: Alexis O. Stevens, John Rizk and Junaid Chatoor
+
+import sensor, image, time, math, struct, pyb, array
+from pyb import Pin, Timer
+from math import sqrt
+from pyb import UART
+
+#Pin assignments to configure H-bridge.
+pin0 = Pin('P0', Pin.IN, Pin.PULL_UP)
+pin1 = Pin('P1', Pin.OUT_PP, Pin.PULL_NONE)
+ENA = pyb.Pin("P2", pyb.Pin.OUT_PP)
+ENB = pyb.Pin("P3", pyb.Pin.OUT_PP)
+INA = pyb.Pin("P4", pyb.Pin.OUT_PP)
+INB = pyb.Pin("P5", pyb.Pin.OUT_PP)
+
+#---------------------------------------------------------------------------------------------------
+
+#Initializations:
+#H-bridge:
+ENA.high()
+ENB.high()
+INA.high()
+INB.low()
+
+#Errors and arrays:
+ErrorArray = [0,0,0,0]
+ErrorArrayTOP = [0,0]
+ErrorArrayINT = [0,0,0,0]
+err1 = 0
+err2 = 0
+err3 = 0
+err4 = 0
+err5 = 0
+
+#Variables controlling servo angle ("a") and DC motor speed ("c").
+a = 0
+c = 0
+
+#The default max speed and variable used in stopping algorithm.
+MaxSpeed = 30;
+stopped = 0;
+
+#Setting the Bluetooth command to value it would not ever be.
+command = -1
+
+#---------------------------------------------------------------------------------------------------
+
+#LEDs used to indicate different stops and brakes.
+red = pyb.LED(1)
+green = pyb.LED(2)
+blue = pyb.LED(3)
+ir_leds = pyb.LED(4)
+
+#---------------------------------------------------------------------------------------------------
+
+#2 different timers used. One for the servo and another for the motor.
+#Timer 4 for the digital servo set to 300 Hz.
+tim = pyb.Timer(4)
+tim.init(freq=300) #Frequency in Hz
+
+#Timer 3 for the DC motor.
+tim2 = pyb.Timer(3)
+tim2.init(freq=1000)
+
+tim.source_freq()
+tim.prescaler()
+print(tim)
+
+#PWM signal for the DC motor.
+pulse_widths1 =int(( tim2.source_freq()/(tim2.prescaler()+1))/100000)
+
+#PWM signal for the servo.
+pulse_widths2 =int(( tim.source_freq()/(tim.prescaler()+1))/100000)
+
+#---------------------------------------------------------------------------------------------------
+
+#Tracks a white line.
+GRAYSCALE_THRESHOLD = [(240, 255)]
+
+#---------------------------------------------------------------------------------------------------
+
+#ROIs used to collect blob or line data.
+#1 thru 4 used for "D" control.
+ROIS1 = [ # [ROI, weight]
+       (0, 000, 320, 10, 0.3)
+      ]
+
+ROIS2 = [ # [ROI, weight]
+       (0, 066, 320, 10, 0.3)
+      ]
+
+ROIS3 = [ # [ROI, weight]
+       (0, 132, 320, 10, 0.3)
+      ]
+
+#4 individually used for "P" control.
+ROIS4 = [ # [ROI, weight]
+       (0, 198, 320, 10, 0.3)
+      ]
+
+#5 used in the implementation of the "I" control.
+ROIS5 = [ # [ROI, weight]
+       (0, 208, 320, 10, 0.3)
+      ]
+
+#---------------------------------------------------------------------------------------------------
+
+#Camera setup
+sensor.reset() #Initialize the camera sensor.
+sensor.set_pixformat(sensor.GRAYSCALE) #Use grayscale.
+sensor.set_framesize(sensor.QVGA) #Used QVGA for a balance of speed and visibility.
+sensor.skip_frames(time = 2000) #Let new settings take affect.
+sensor.set_auto_gain(False) #Must be turned off for color tracking
+sensor.set_auto_whitebal(False) #Must be turned off for color tracking
+clock = time.clock() #Tracks FPS.
+
+#Bluetooth setup:
+uart = UART(1, 115200, timeout_char = 1000)
+uart.write('AT\r\n')
+uart.write('AT+VERSION\r\n')
+uart.write('AT+PSWD:"1234"\r\n')
+uart.write('AT+NAME=LAB3JunJohnAlex\r\n')
+uart.write('AT+UART=115200,0,0\r\n')
+
+#---------------------------------------------------------------------------------------------------
+
+while(True):
+   clock.tick() #Track elapsed milliseconds between snapshots().
+   img = sensor.snapshot() #Take a picture and return the image.
+
+   #------------------------------------------------------------------------------------------------
+
+   #Commands to set different max speeds for troubleshooting and testing purposes.
+   while (uart.any()):
+
+       command = chr(uart.readchar())
+       print(command)
+
+   #Go from BT
+   if (command == 'b'):
+       INA.high();
+       INB.low();
+       stopped = 0;
+
+   #Stop from BT
+   if (command == 'v'):
+       INA.low();
+       INB.low();
+
+   if (command == 'a'):
+        MaxSpeed = 32;
+
+   if (command == 's'):
+        MaxSpeed = 33;
+
+   if (command == 'd'):
+        MaxSpeed = 34;
+
+   if (command == 'f'):
+         MaxSpeed = 35;
+
+   if (command == 'g'):
+         MaxSpeed = 36;
+
+   if (command == 'h'):
+         MaxSpeed = 37;
+
+   if (command == 'j'):
+         MaxSpeed = 38;
+
+   #------------------------------------------------------------------------------------------------
+
+   #For loops used to find the blobs with the highest pixel count (largest) in the ROIs.
+   for r in ROIS1:
+       blobs1 = img.find_blobs(GRAYSCALE_THRESHOLD, roi=r[0:4],pixels_threshold = 10, area_threshold = 25 , merge=True) #r[0:4] is ROI tuple.
+       largest_blob1 = 0
+
+       if blobs1:
+       #Find the index of the blob with the most pixels.
+           most_pixels1 = 0
+           for i in range(len(blobs1)):
+               if blobs1[i][4] > most_pixels1:
+                   most_pixels1 = blobs1[i][4] #[4] is pixels.
+                   largest_blob1 = i
+           img.draw_rectangle(blobs1[largest_blob1][0:4], color=0) #Black rectangle
+           img.draw_cross(blobs1[largest_blob1][5], blobs1[largest_blob1][6], color=0) #Black cross
+           err1 = 160 - blobs1[i][5] #If blobs are detected, compute the error using the largest.
+
+   for r in ROIS2:
+       blobs2 = img.find_blobs(GRAYSCALE_THRESHOLD, roi=r[0:4],pixels_threshold = 10, area_threshold = 25 , merge=True)
+       largest_blob2 = 0
+
+       if blobs2:
+           most_pixels2 = 0
+           for j in range(len(blobs2)):
+               if blobs2[j][4] > most_pixels2:
+                   most_pixels2 = blobs2[j][4]
+                   largest_blob2 = j
+           img.draw_rectangle(blobs2[largest_blob2][0:4], color=0)
+           img.draw_cross(blobs2[largest_blob2][5], blobs2[largest_blob2][6], color=0)
+           err2 = 160 - blobs2[j][5]
+
+   for r in ROIS3:
+       blobs3 = img.find_blobs(GRAYSCALE_THRESHOLD, roi=r[0:4],pixels_threshold = 10, area_threshold = 25 , merge=True)
+       largest_blob3 = 0
+
+       if blobs3:
+           most_pixels3 = 0
+           for k in range(len(blobs3)):
+               if blobs3[k][4] > most_pixels3:
+                   most_pixels3 = blobs3[k][4]
+                   largest_blob3 = k
+           img.draw_rectangle(blobs3[largest_blob3][0:4], color=0)
+           img.draw_cross(blobs3[largest_blob3][5], blobs3[largest_blob3][6], color=0)
+           err3 = 160 - blobs3[k][5]
+
+   for r in ROIS4:
+       blobs4 = img.find_blobs(GRAYSCALE_THRESHOLD, roi=r[0:4],pixels_threshold = 10, area_threshold = 25 , merge=True)
+       largest_blob4 = 0
+
+       if blobs4:
+           most_pixels4 = 0
+           for x in range(len(blobs4)):
+               if blobs4[x][4] > most_pixels4:
+                   most_pixels4 = blobs4[x][4]
+                   largest_blob4 = x
+           img.draw_rectangle(blobs4[largest_blob4][0:4], color=0)
+           img.draw_cross(blobs4[largest_blob4][5], blobs4[largest_blob4][6], color=0)
+           err4 = 160 - blobs4[x][5]
+
+   for r in ROIS5:
+       blobs5 = img.find_blobs(GRAYSCALE_THRESHOLD, roi=r[0:4],pixels_threshold = 10, area_threshold = 25 , merge=True)
+       largest_blob5 = 0
+
+       if blobs5:
+           most_pixels5 = 0
+           for y in range(len(blobs5)):
+               if blobs5[y][4] > most_pixels5:
+                   most_pixels5 = blobs5[y][4]
+                   largest_blob5 = y
+           img.draw_rectangle(blobs5[largest_blob5][0:4], color=0)
+           img.draw_cross(blobs5[largest_blob5][5], blobs5[largest_blob5][6], color=0)
+           err5 = 160 - blobs5[y][5]
+
+   #------------------------------------------------------------------------------------------------
+
+   #Logic used to stop motor if camera doesn't detect any blobs in the middle of its image.
+   if ((not blobs2) & (not blobs3)):
+        print("NO BLOB STOP")
+        c = 0
+
+   #------------------------------------------------------------------------------------------------
+
+   #Gains, or constants, used to configure turns and speeds throughout the track.
+   kp = 0.23125;
+   km = 0.0625*2;
+
+   #------------------------------------------------------------------------------------------------
+
+   #Error array populated by errors collected in for loops. For clarity and redundancy.
+   ErrorArray = [err1, err2, err3, err4]
+
+   #5 element error buffer for "I" term. The elements within it are summed.
+   ErrorArrayINT.insert(0, err5)
+   ErrorArrayINT.pop(-1)
+
+   #2 element error buffer for the top ROI which added and additional braking requirement.
+   ErrorArrayTOP.insert(0, err1)
+   ErrorArrayTOP.pop(-1)
+
+   #------------------------------------------------------------------------------------------------
+
+   #"D" term equation with top error scaled to assist turns at higher speeds.
+   bx = ((1.2*ErrorArray[0] - ErrorArray[3]) + (3*(ErrorArray[1] - ErrorArray[2])))
+
+   #Summed "I" term with upper and lower bounds.
+   ix = sum(ErrorArrayINT)
+   if (ix > 160):
+       ix = 160
+   if (ix < -160):
+       ix = -160
+
+   #Turning control: 146 is straight with right/left turns being 37 added/subtracted from 146.
+   a  = 146 + kp*(ErrorArray[3] + bx + 0.1*ix)
+
+   #Speed control: Max speed is set initially or via BT. Speed is set to decrease with turns.
+   c = MaxSpeed - km*(abs(ErrorArray[3]) + abs(bx))
+
+   #------------------------------------------------------------------------------------------------
+
+   #Braking to VCC requirement.
+   if ((abs(ErrorArrayTOP[0] - ErrorArray[3]) >= 60) & (c >= 0.9*MaxSpeed) & (ErrorArrayTOP[0] ==
+       0.9*ErrorArrayTOP[1])):
+       INB.high()
+       LED.on(red)
+
+   #"Release" brake requiremet which is inherently time-variable.
+   if ((c < (0.9*MaxSpeed))):
+       INB.low()
+       LED.off(red)
+
+   #------------------------------------------------------------------------------------------------
+
+   #Rounding "a" towards zero, and "c" towards negative infinity, so that they become integers.
+   a = math.trunc(a)
+   c = math.floor(c)
+
+   #------------------------------------------------------------------------------------------------
+
+   #Safety if statements to avoid oversteering and going too slow.
+   if (a > 183):
+       a = 183;
+   if (a < 109):
+       a = 109;
+   if (c < 15):
+       c = 15;
+
+   #------------------------------------------------------------------------------------------------
+
+   #Setting the Pulse Widths
+   if (a > 0) :
+        ch1 = tim.channel(1, Timer.PWM, pin=Pin("P7"), pulse_width = c*pulse_widths1)
+        ch2 = tim.channel(2, Timer.PWM, pin=Pin("P8"), pulse_width = a*pulse_widths2)
+
+   #------------------------------------------------------------------------------------------------
+
+   #Stopping:
+   #If 2 blobs are detected, reverse momentarily then stop.
+   if ((len(blobs4) == 2) & (len(blobs3) == 2)):
+        center0 = blobs4[0].cy()
+        center1 = blobs4[1].cy()
+        center0 = math.trunc(center0)
+        center1 = math.trunc(center1)
+        if (center0 == center1):
+             stopped = 1;
+             print("Stopped")
+             c = 95
+             INA.low()
+             INB.high()
+             pyb.delay(200)
+             LED.on(blue)
+   if (stopped == 1):
+        c = 95
+        INA.high()
+        INB.high()
+        LED.off(blue)
+
+   #If 3 blobs are detected, reverse momentarily then stop.
+   if ((len(blobs4) == 3) & (len(blobs3) == 3)):
+        center0 = blobs4[0].cy()
+        center1 = blobs4[1].cy()
+        center2 = blobs4[2].cy()
+        center0 = math.trunc(center0)
+        center1 = math.trunc(center1)
+        center2 = math.trunc(center2)
+        if (center0 == center1 == center2):
+             stopped = 1;
+             print("Stopped")
+             c = 95
+             INA.low()
+             INB.high()
+             pyb.delay(200)
+             LED.on(green)
+   if (stopped == 1):
+        c = 95
+        INA.high()
+        INB.high()
+        LED.off(green)
+
